@@ -5,13 +5,13 @@ from bitmap import vga1_bold_16x32 as font
 import network
 import urequests
 import gc
-import cst816  # Import the touch module
+import cst816
 
-# Initialize touch (assuming the library handles I2C internally)
+# Initialize touch
 touch = cst816.CST816()
 
 # Wi-Fi credentials
-WIFI_SSID = "Your SSID"
+WIFI_SSID = "Your WIFI SSID"
 WIFI_PASSWORD = "WIFI Password"
 
 # API URLs
@@ -19,209 +19,176 @@ GEOLOCATION_API_URL = "http://ip-api.com/json/"
 WORLD_TIME_API_URL = "https://worldtimeapi.org/api/timezone/{timezone}"
 WEATHER_API_URL = "http://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&hourly=relativehumidity_2m"
 
-# Global variable to track temperature unit
+# Global variables
 temperature_unit = "C"  # Default to Celsius
+last_touch_time = None  # For touch message handling
 
 def truncate_to_hour(time_str):
     """Truncate time string to hourly format (YYYY-MM-DDTHH:00)"""
     try:
-        # Split into date/time parts and remove timezone
         date_part, time_part = time_str.split('T', 1)
-        time_part = time_part.split('+')[0].split('-')[0]  # Remove timezone
+        time_part = time_part.split('+')[0].split('-')[0]
         hour = time_part.split(':')[0]
         return f"{date_part}T{hour}:00"
     except:
-        return time_str  # Fallback if parsing fails
+        return time_str
 
-# Connect to Wi-Fi (unchanged)
 def connect_wifi():
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
     if not wlan.isconnected():
         print("Connecting to Wi-Fi...")
         wlan.connect(WIFI_SSID, WIFI_PASSWORD)
-        while not wlan.isconnected():
+        for _ in range(15):  # 15-second timeout
+            if wlan.isconnected():
+                break
             time.sleep(1)
-    print("Connected to Wi-Fi")
-    print("IP:", wlan.ifconfig()[0])
+    if wlan.isconnected():
+        print("Connected to Wi-Fi")
+        print("IP:", wlan.ifconfig()[0])
+        return True
+    print("Wi-Fi connection failed")
+    return False
 
-# Fetch geolocation data (unchanged)
 def fetch_geolocation():
     try:
-        response = urequests.get(GEOLOCATION_API_URL)
-        if response.status_code == 200:
-            print("Geolocation data fetched successfully")
-            geolocation_data = response.json()
-            print("Geolocation Data:", geolocation_data)
-            return geolocation_data
-        else:
-            print("Failed to fetch geolocation data. Status code:", response.status_code)
-            return None
+        print("Fetching geolocation...")
+        response = urequests.get(GEOLOCATION_API_URL, timeout=10)
+        return response.json() if response.status_code == 200 else None
     except Exception as e:
-        print("Error fetching geolocation data:", e)
+        print("Geolocation error:", e)
         return None
     finally:
         gc.collect()
 
-# Fetch current time (unchanged)
-def fetch_current_time(timezone):
-    try:
-        url = WORLD_TIME_API_URL.format(timezone=timezone)
-        response = urequests.get(url)
-        if response.status_code == 200:
-            print("Current time fetched successfully")
-            time_data = response.json()
-            print("Time Data:", time_data)
-            return time_data
-        else:
-            print("Failed to fetch current time. Status code:", response.status_code)
-            return None
-    except Exception as e:
-        print("Error fetching current time:", e)
-        return None
-    finally:
-        gc.collect()
-
-# Synchronize time (unchanged)
 def sync_time(timezone):
     try:
-        time_data = fetch_current_time(timezone)
-        if time_data:
-            current_time = time_data['datetime']
-            year = int(current_time[:4])
-            month = int(current_time[5:7])
-            day = int(current_time[8:10])
-            hour = int(current_time[11:13])
-            minute = int(current_time[14:16])
-            second = int(current_time[17:19])
-            
-            rtc = RTC()
-            rtc.datetime((year, month, day, 0, hour, minute, second, 0))
-            print(f"Time synchronized with WorldTimeAPI: {rtc.datetime()}")
+        print(f"Syncing time for: {timezone}")
+        encoded_tz = timezone.replace(" ", "_")
+        response = urequests.get(WORLD_TIME_API_URL.format(timezone=encoded_tz), timeout=10)
+        if response.status_code == 200:
+            time_data = response.json()
+            dt_str = time_data['datetime'].split('.')[0]
+            year, month, day = map(int, dt_str[:10].split('-'))
+            hour, minute, second = map(int, dt_str[11:19].split(':'))
+            RTC().datetime((year, month, day, 0, hour, minute, second, 0))
+            print("Time synced successfully")
+        else:
+            print("Time sync failed:", response.status_code)
     except Exception as e:
-        print("Error synchronizing time with WorldTimeAPI:", e)
+        print("Time sync error:", e)
+    finally:
+        gc.collect()
 
-# Fetch weather data (unchanged)
 def fetch_weather_data(lat, lon):
     try:
-        url = WEATHER_API_URL.format(lat=lat, lon=lon)
-        response = urequests.get(url)
-        if response.status_code == 200:
-            print("Weather data fetched successfully")
-            weather_data = response.json()
-            print("Weather Data:", weather_data)
-            return weather_data
-        else:
-            print("Failed to fetch weather data. Status code:", response.status_code)
-            return None
+        print(f"Fetching weather for {lat},{lon}")
+        response = urequests.get(WEATHER_API_URL.format(lat=lat, lon=lon), timeout=10)
+        return response.json() if response.status_code == 200 else None
     except Exception as e:
-        print("Error fetching weather data:", e)
+        print("Weather fetch error:", e)
         return None
     finally:
         gc.collect()
 
-# Weather condition mapping (unchanged)
-def get_weather_condition(weather_code):
-    weather_conditions = {0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast", 45: "Fog", 48: "Depositing rime fog", 51: "Light drizzle", 53: "Moderate drizzle", 55: "Dense drizzle", 56: "Light freezing drizzle", 57: "Dense freezing drizzle", 61: "Slight rain", 63: "Moderate rain", 65: "Heavy rain", 66: "Light freezing rain", 67: "Heavy freezing rain", 71: "Slight snow fall", 73: "Moderate snow fall", 75: "Heavy snow fall", 77: "Snow grains", 80: "Slight rain showers", 81: "Moderate rain showers", 82: "Violent rain showers", 85: "Slight snow showers", 86: "Heavy snow showers", 95: "Thunderstorm", 96: "Thunderstorm with slight hail", 99: "Thunderstorm with heavy hail"}
-    return weather_conditions.get(weather_code, "Unknown")
+def get_weather_condition(code):
+    conditions = {
+        0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+        45: "Fog", 48: "Rime fog", 51: "Light drizzle", 53: "Moderate drizzle",
+        55: "Dense drizzle", 56: "Freezing drizzle", 57: "Dense freezing drizzle",
+        61: "Slight rain", 63: "Moderate rain", 65: "Heavy rain",
+        66: "Freezing rain", 67: "Heavy freezing rain", 71: "Slight snow",
+        73: "Moderate snow", 75: "Heavy snow", 77: "Snow grains",
+        80: "Slight showers", 81: "Moderate showers", 82: "Violent showers",
+        85: "Snow showers", 86: "Heavy snow showers", 95: "Thunderstorm",
+        96: "Thunderstorm w/hail", 99: "Severe thunderstorm"
+    }
+    return conditions.get(code, "Unknown")
 
-# Weather image mapping (unchanged)
-def get_weather_image(weather_code):
-    weather_images = {0: "jpg/clear_sky.jpg", 1: "jpg/mainly_clear.jpg", 2: "jpg/partly_cloudy.jpg", 3: "jpg/overcast.jpg", 45: "jpg/fog.jpg", 48: "jpg/fog.jpg", 51: "jpg/light_drizzle.jpg", 53: "jpg/moderate_drizzle.jpg", 55: "jpg/dense_drizzle.jpg", 56: "jpg/freezing_drizzle.jpg", 57: "jpg/freezing_drizzle.jpg", 61: "jpg/light_rain.jpg", 63: "jpg/moderate_drizzle.jpg", 65: "jpg/dense_drizzle.jpg", 66: "jpg/freezing_rain.jpg", 67: "jpg/freezing_rain.jpg", 71: "jpg/light_snow.jpg", 73: "jpg/moderate_snow.jpg", 75: "jpg/heavy_snow.jpg", 77: "jpg/snow_grains.jpg", 80: "jpg/light_drizzle.jpg", 81: "jpg/moderate_drizzle.jpg", 82: "jpg/dense_drizzle.jpg", 85: "jpg/light_snow.jpg", 86: "jpg/heavy_snow.jpg", 95: "jpg/thunderstorm.jpg", 96: "jpg/thunderstorm_hail.jpg", 99: "jpg/thunderstorm_heavyhail.jpg"}
-    return weather_images.get(weather_code, "jpg/unknown.jpg")
+def get_weather_image(code):
+    images = {
+        0: "jpg/clear_sky.jpg", 1: "jpg/mainly_clear.jpg", 
+        2: "jpg/partly_cloudy.jpg", 3: "jpg/overcast.jpg",
+        45: "jpg/fog.jpg", 48: "jpg/fog.jpg", 51: "jpg/drizzle.jpg",
+        53: "jpg/drizzle.jpg", 55: "jpg/drizzle.jpg", 56: "jpg/freezing.jpg",
+        57: "jpg/freezing.jpg", 61: "jpg/rain.jpg", 63: "jpg/rain.jpg",
+        65: "jpg/rain.jpg", 66: "jpg/freezing.jpg", 67: "jpg/freezing.jpg",
+        71: "jpg/snow.jpg", 73: "jpg/snow.jpg", 75: "jpg/snow.jpg",
+        77: "jpg/snow.jpg", 80: "jpg/showers.jpg", 81: "jpg/showers.jpg",
+        82: "jpg/showers.jpg", 85: "jpg/snow.jpg", 86: "jpg/snow.jpg",
+        95: "jpg/thunder.jpg", 96: "jpg/thunder.jpg", 99: "jpg/thunder.jpg"
+    }
+    return images.get(code, "jpg/unknown.jpg")
 
-def convert_temperature(temp, unit):
-    if unit == "F":
-        return (temp * 9/5) + 32  # Convert to Fahrenheit
-    return temp  # Default to Celsius
-
-def display_weather_data(tft, weather_data, geolocation_data):
+def display_weather_data(tft, weather_data, geo_data):
     global temperature_unit
     try:
         tft.fill(gc9a01.BLACK)
+        if not weather_data or 'current_weather' not in weather_data:
+            return
 
-        if weather_data and 'current_weather' in weather_data:
-            current_weather = weather_data['current_weather']
-            temperature = current_weather['temperature']
-            weather_code = current_weather['weathercode']
-            current_time = current_weather['time']
+        current = weather_data['current_weather']
+        temp = current['temperature']
+        code = current['weathercode']
+        current_time = current['time']
 
-            # Process hourly data with truncation
-            hourly_data = weather_data.get('hourly', {})
-            time_list = hourly_data.get('time', [])
-            humidity_list = hourly_data.get('relativehumidity_2m', [])
+        # Process humidity data
+        hourly = weather_data.get('hourly', {})
+        times = [truncate_to_hour(t) for t in hourly.get('time', [])]
+        humidities = hourly.get('relativehumidity_2m', [])
+        
+        try:
+            idx = times.index(truncate_to_hour(current_time))
+            humidity = humidities[idx]
+        except (ValueError, IndexError):
+            humidity = humidities[0] if humidities else "N/A"
 
-            # Truncate times to hourly format
-            current_time_truncated = truncate_to_hour(current_time)
-            time_list_truncated = [truncate_to_hour(t) for t in time_list]
+        # Temperature conversion and unit
+        display_temp = (temp * 9/5) + 32 if temperature_unit == "F" else temp
+        unit_char = "F" if temperature_unit == "F" else "C"
 
-            try:
-                time_index = time_list_truncated.index(current_time_truncated)
-                humidity = humidity_list[time_index]
-            except (ValueError, IndexError):
-                print("Using fallback: First humidity entry")
-                humidity = humidity_list[0] if humidity_list else "N/A"
+        # Display layout calculations
+        def center(text):
+            return (tft.width() - len(text) * font.WIDTH) // 2
 
-            # Temperature display
-            display_temp = convert_temperature(temperature, temperature_unit)
-            
-            # Display layout calculations
-            def center_x(text):
-                return (tft.width() - len(text) * font.WIDTH) // 2
+        # Humidity & Temperature display
+        hum_text = f"{humidity}%/"
+        temp_text = f"{display_temp:.1f}{unit_char}"
+        combined_text = hum_text + temp_text
+        x_pos = center(combined_text)
+        
+        tft.text(font, hum_text, x_pos, 45, gc9a01.WHITE)
+        temp_x = x_pos + len(hum_text) * font.WIDTH
+        tft.text(font, temp_text, temp_x, 45, gc9a01.WHITE)
 
-            # Humidity and temperature display
-            humidity_text = f"{humidity}%/"
-            temp_text = f"{display_temp:.1f}"
-            combined_text = f"{humidity_text}{temp_text}"
-            combined_x = center_x(combined_text)
-            tft.text(font, humidity_text, combined_x, 45, gc9a01.WHITE, gc9a01.BLACK)
-            temp_x = combined_x + len(humidity_text) * font.WIDTH
-            tft.text(font, temp_text, temp_x, 45, gc9a01.WHITE, gc9a01.BLACK)
+        # City & Condition
+        city = geo_data.get('city', 'Unknown')[:15]
+        tft.text(font, city, center(city), 85, gc9a01.WHITE)
+        condition = get_weather_condition(code)
+        tft.text(font, condition, center(condition), 125, gc9a01.WHITE)
 
-            # Unit display
-            unit_image = "jpg/celsius.jpg" if temperature_unit == "C" else "jpg/fahrenheit.jpg"
-            unit_x = temp_x + len(temp_text) * font.WIDTH
-            tft.jpg(unit_image, unit_x, 45, 30)
-
-            # City name
-            city_name = geolocation_data.get('city', 'Unknown City')
-            city_text = city_name
-            city_x = center_x(city_text)
-            tft.text(font, city_text, city_x, 85, gc9a01.WHITE, gc9a01.BLACK)
-
-            # Weather condition
-            weather_condition = get_weather_condition(weather_code)
-            condition_x = center_x(weather_condition)
-            tft.text(font, weather_condition, condition_x, 125, gc9a01.WHITE, gc9a01.BLACK)
-
-            # Weather image
-            image_file = get_weather_image(weather_code)
-            tft.jpg(image_file, 80, 160, 75)
+        # Weather image
+        tft.jpg(get_weather_image(code), 80, 160, 75)
 
     except Exception as e:
-        print("Error displaying weather data:", e)
+        print("Display error:", e)
     finally:
         gc.collect()
 
-# Touch handling (unchanged)
 def handle_touch(tft):
-    global temperature_unit
+    global temperature_unit, last_touch_time
     if touch.get_touch():
-        print("Touch detected!")
-        new_unit = "F" if temperature_unit == "C" else "C"
-        message = f"Changing to {new_unit}"
-        message2 = "in 60 sec"
+        temperature_unit = "F" if temperature_unit == "C" else "C"
         tft.fill(gc9a01.BLACK)
-        tft.text(font, message, 10, 100, gc9a01.WHITE, gc9a01.BLACK)
-        tft.text(font, message2, 50, 135, gc9a01.WHITE, gc9a01.BLACK)
-        time.sleep(60)
-        temperature_unit = new_unit
-        tft.fill(gc9a01.BLACK)
+        tft.text(font, "Changing to", 30, 90, gc9a01.WHITE)
+        tft.text(font, f"{temperature_unit} on refresh", 20, 125, gc9a01.WHITE)
+        last_touch_time = time.time()
+        print(f"Changed unit to {temperature_unit}")
 
-# Main function (unchanged)
 def main():
-    global temperature_unit
+    global last_touch_time
 
+    # Display initialization
     spi = SPI(2, baudrate=80000000, polarity=0, sck=Pin(10), mosi=Pin(11))
     tft = gc9a01.GC9A01(
         spi,
@@ -234,45 +201,59 @@ def main():
         rotation=0,
         buffer_size=32*32*2
     )
-
     tft.init()
     tft.fill(gc9a01.BLACK)
-    time.sleep(1)
 
-    connect_wifi()
-
-    geolocation_data = fetch_geolocation()
-    if not geolocation_data:
-        print("Failed to fetch geolocation data. Exiting...")
+    # Network connection
+    if not connect_wifi():
+        tft.text(font, "Wi-Fi Failed", 40, 100, gc9a01.RED)
         return
 
-    lat = geolocation_data.get('lat', geolocation_data.get('latitude'))
-    lon = geolocation_data.get('lon', geolocation_data.get('longitude'))
-    timezone = geolocation_data.get('timezone')
-
-    if None in (lat, lon, timezone):
-        print("Invalid coordinates/timezone. Exiting...")
+    # Get location data
+    geo_data = fetch_geolocation()
+    if not geo_data:
+        tft.text(font, "Geo Failed", 40, 100, gc9a01.RED)
         return
 
-    sync_time(timezone)
+    # Extract coordinates
+    lat = geo_data.get('lat') or geo_data.get('latitude')
+    lon = geo_data.get('lon') or geo_data.get('longitude')
+    tz = geo_data.get('timezone')
+    if None in (lat, lon, tz):
+        tft.text(font, "Invalid Data", 40, 100, gc9a01.RED)
+        return
 
-    last_weather_fetch = time.time() - 60
+    # Time synchronization
+    sync_time(tz)
+
+    # Main loop
+    last_update = 0
     while True:
-        current_time = time.time()
-
-        handle_touch(tft)
-
-        if current_time - last_weather_fetch >= 60:
-            weather_data = fetch_weather_data(lat, lon)
-            if weather_data:
-                display_weather_data(tft, weather_data, geolocation_data)
-                last_weather_fetch = current_time
-            else:
-                print("Retrying weather fetch...")
-                time.sleep(10)
-
-        time.sleep(0.1)
-        gc.collect()
+        try:
+            now = time.time()
+            
+            # Clear touch message after 2 seconds
+            if last_touch_time and (now - last_touch_time > 2):
+                tft.fill(gc9a01.BLACK)
+                last_touch_time = None
+                
+            # Handle user input
+            handle_touch(tft)
+            
+            # Update weather every 60 seconds
+            if now - last_update >= 60:
+                if weather := fetch_weather_data(lat, lon):
+                    display_weather_data(tft, weather, geo_data)
+                    last_update = now
+                else:
+                    print("Weather update failed")
+                
+            time.sleep(0.1)
+            gc.collect()
+            
+        except Exception as e:
+            print("Main loop error:", e)
+            time.sleep(5)
 
 if __name__ == "__main__":
     main()
